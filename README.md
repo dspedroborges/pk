@@ -1,105 +1,85 @@
 # pk.js
 
-A CSS-in-JS utility that works in both the browser and Node.js. You write styles as plain JavaScript objects, get unique scoped class names back, and never worry about cascade conflicts or memorising CSS property names.
+A server-side CSS-in-JS utility for Node.js. You write styles as plain JavaScript objects, get unique scoped class names back, and never worry about cascade conflicts or memorising CSS property names. All generated CSS accumulates in memory — call `flush()` to write it to a file or inline it into your HTML response.
 
 ```js
+const { box, text, space, cx, theme, flush } = require('./pk.js')
+
+theme({ colors: { bg: '#fff', accent: '#6366f1' } })
+
 const btn = cx(
-  box({ fill: "accent", round: "md", ink: "bg" }),
+  box({ fill: 'accent', round: 'md', ink: 'bg' }),
   space({ pad: [16, 9] }),
-  text({ size: 14, weight: "medium" }),
-  decor({ cursor: "pointer" })
+  text({ size: 14, weight: 'medium' })
 )
 
-// use it
-element.className = btn        // works — toString() returns the class string
-element.className = btn.class  // also works — explicit .class property
+// btn.class → 'pk-3f9a1c pk-7b2d4e pk-a1f903'
+flush('./public/styles.css')
 ```
 
 ---
 
 ## Install
 
-**Browser**
-```html
-<script src="pk.js"></script>
-<script>
-  const { box, text, layout, space, size, place, decor, animate, cx, theme, global } = pk
-</script>
-```
-
-**Node.js / SSR**
 ```js
-const pk = require("./pk.js")
-const { box, text, cx, flush } = pk
+const pk = require('./pk.js')
+const { box, text, layout, space, size, place, decor, transform, animate, cx, theme, global, flush, reset } = pk
 ```
 
 ---
 
 ## How it works
 
-Every function returns a **`PKClass` object**. It behaves like a string anywhere you use it — in template literals, assigned to `className`, passed to `cx()`. It also has a `.class` property if you want to be explicit.
+Every function returns a **`PKClass` object**. It behaves like a string anywhere you use it — in template literals, assigned to `class=`, passed to `cx()`. It also has a `.class` property if you want to be explicit.
 
 ```js
-const heading = text({ size: 24, weight: "bold" })
+const heading = text({ size: 24, weight: 'bold' })
 
-heading          // → PKClass { _c: "pk-3f9a1c" }
-`${heading}`     // → "pk-3f9a1c"
-heading.class    // → "pk-3f9a1c"
-heading.toString()  // → "pk-3f9a1c"
+`${heading}`       // → 'pk-3f9a1c'
+heading.class      // → 'pk-3f9a1c'
+heading.toString() // → 'pk-3f9a1c'
 ```
 
-Internally, pk.js maintains a **single `<style data-pk>` tag** in the browser, or an **in-memory CSS buffer** in Node. The first time a unique set of styles is seen, their CSS is written there. Identical styles always produce the same class and are never written twice — the hash is deterministic, so `box({ fill: "red" })` called 100 times generates exactly one CSS rule.
+Every call appends CSS to an in-memory buffer. Identical styles always produce the same class name and are never written twice — the hash is deterministic, so `box({ fill: 'red' })` called 100 times generates exactly one CSS rule.
 
 ```
-box({ fill: "surface", round: "md" })
+box({ fill: 'surface', round: 'md' })
   ↓
 resolves tokens, builds CSS string
   ↓
-hashes it → "3f9a1c"
+hashes it → '3f9a1c'
   ↓
-already in cache? → return PKClass("pk-3f9a1c")  (nothing written)
-not in cache?     → write .pk-3f9a1c{...} to style tag / buffer
-                  → return PKClass("pk-3f9a1c")
+already in cache? → return PKClass('pk-3f9a1c')  (nothing written)
+not in cache?     → append .pk-3f9a1c{...} to cssBuffer
+                  → return PKClass('pk-3f9a1c')
 ```
 
 ---
 
-## SSR / Node.js
+## `flush()` and `reset()`
 
-In Node there is no DOM, so nothing is injected anywhere automatically. Instead, all generated CSS accumulates in an in-memory buffer. When you're done building your HTML, call `flush()` to write the CSS to a file (or get it as a string to inline it).
+All generated CSS accumulates in a single in-memory buffer. You control when and how it gets written.
 
 ```js
-const { box, text, cx, theme, flush, reset } = require("./pk.js")
+const { box, text, cx, theme, flush, reset } = require('./pk.js')
 
-// define your styles
-theme({ colors: { bg: "#fff", ink: "#111", accent: "#3b82f6" } })
+theme({ colors: { bg: '#fff', ink: '#111', accent: '#3b82f6' } })
 
 const card = cx(
-  box({ fill: "bg", round: "lg", raise: "md", line: 1 }),
+  box({ fill: 'bg', round: 'lg', raise: 'md', line: 1 }),
   space({ pad: 24 })
 )
+const heading = text({ size: 18, weight: 'semi' })
 
-const heading = text({ size: 24, weight: "bold", ink: "ink" })
-
-// write the accumulated CSS to disk
-flush("./public/styles.css")
-
-// use the class names in your HTML template
-const html = `
-  <div class="${card}">
-    <h1 class="${heading}">Hello</h1>
-  </div>
-`
+// write CSS to disk, use class names in your template
+flush('./public/styles.css')
+const html = `<div class="${card}"><h2 class="${heading}">Hello</h2></div>`
 ```
 
-Then link the file in your HTML:
-```html
-<link rel="stylesheet" href="/styles.css" />
-```
+**Inline the CSS into the HTML response:**
 
-Or inline it:
 ```js
-const css = flush()  // no path = returns string without writing
+const css  = flush()  // no path — returns string without writing
 const html = `
   <!DOCTYPE html>
   <html>
@@ -107,30 +87,30 @@ const html = `
   <body>...</body>
   </html>
 `
+res.send(html)
 ```
 
 ### `flush(filepath?)`
 
-Writes the accumulated CSS to `filepath` (Node only) and returns the CSS string. Safe to call multiple times — it writes whatever has accumulated so far.
+Appends the CSS buffer to `filepath` if provided, and always returns the CSS string.
 
 ```js
-flush()                        // returns CSS string, no file written
-flush("./public/styles.css")  // writes file AND returns CSS string
+flush()                       // returns CSS string, no file written
+flush('./public/styles.css')  // writes file AND returns CSS string
 ```
 
 ### `reset()`
 
-Clears the cache, the CSS buffer, and (in the browser) the style tag. Useful between SSR requests if you want per-request CSS instead of a global accumulation.
+Clears the cache and the CSS buffer. Use between SSR requests if you want per-request CSS instead of a growing global buffer.
 
 ```js
-// per-request SSR pattern
 reset()
-// ... render your page, generating styles ...
+// ... render your page, all style calls accumulate fresh ...
 const css = flush()
+res.send(`<html><head><style>${css}</style></head>...</html>`)
 ```
 
 ---
-
 ## Core concepts
 
 ### Numbers are always `px`
@@ -290,7 +270,7 @@ box({
 
 ---
 
-## The eight functions
+## The nine functions
 
 ### `box()` — visual shell
 
@@ -507,6 +487,111 @@ const pop = animate({
 
 ---
 
+### `transform()` — transforms, transitions, and visibility
+
+Controls CSS transforms, transition timing, and visibility helpers. The primary use case is **toggled UI** — offcanvas drawers, modals, tooltips, dropdowns — where you define a base (hidden) state and an active (visible) state as two separate classes, then toggle the active class in JS.
+
+```js
+transform({
+  // ── transforms ──────────────────────────────────────────────
+  x:        "-100%",  // translateX — px number or string
+  y:        0,        // translateY
+  z3d:      0,        // translateZ (for 3D layers)
+  scale:    0.95,     // scale(n)
+  scaleX:   1,        // scaleX(n) independently
+  scaleY:   1,        // scaleY(n) independently
+  rotate:   45,       // degrees (number) or string "0.5turn"
+  skewX:    0,        // degrees
+  skewY:    0,        // degrees
+  origin:   "top",    // transform-origin — token or raw string
+
+  // ── transition ──────────────────────────────────────────────
+  duration: 300,      // ms
+  ease:     "out",    // in | out | in-out | linear | raw cubic-bezier
+  delay:    0,        // ms
+  prop:     "all",    // what to transition — "transform" | "opacity" | "all" | raw
+
+  // ── visibility helpers ──────────────────────────────────────
+  visible:    true,   // false → visibility: hidden (stays in layout)
+  pointer:    true,   // false → pointer-events: none
+  opacity:    1,      // 0–1, no px
+  backface:   false,  // backface-visibility (useful for 3D flips)
+  willChange: "transform", // hint to GPU-accelerate this element
+
+  on: { ... }
+})
+```
+
+**`origin` tokens:**
+
+| Token | CSS value |
+|---|---|
+| `center` | `center` |
+| `top` | `top center` |
+| `bottom` | `bottom center` |
+| `left` | `center left` |
+| `right` | `center right` |
+| `top-left` | `top left` |
+| `top-right` | `top right` |
+| `bottom-left` | `bottom left` |
+| `bottom-right` | `bottom right` |
+
+**The toggle pattern** — define two classes, toggle one:
+
+```js
+// Offcanvas drawer from the right
+const drawer     = transform({ x: "100%", duration: 300, ease: "in-out", willChange: "transform" })
+const drawerOpen = transform({ x: 0 })
+
+el.classList.add(drawer.class)   // base state always applied
+
+// open
+el.classList.add(drawerOpen.class)
+// close
+el.classList.remove(drawerOpen.class)
+```
+
+```js
+// Tooltip: invisible + non-interactive by default, visible on trigger
+const tooltip        = transform({ scale: 0.9, opacity: 0, pointer: false, duration: 150, origin: "top" })
+const tooltipVisible = transform({ scale: 1,   opacity: 1, pointer: true })
+
+trigger.addEventListener("mouseenter", () => tip.classList.add(tooltipVisible.class))
+trigger.addEventListener("mouseleave", () => tip.classList.remove(tooltipVisible.class))
+```
+
+```js
+// Modal backdrop: transparent → opaque
+const backdrop        = cx(place({ type: "fixed", inset: 0, z: 50 }), transform({ opacity: 0, pointer: false, duration: 200 }))
+const backdropVisible = transform({ opacity: 1,   pointer: true })
+```
+
+```js
+// Scale-in modal panel
+const modal      = cx(place({ type: "fixed", inset: 0, z: 51 }), transform({ scale: 0.95, opacity: 0, duration: 250, ease: "out" }))
+const modalOpen  = transform({ scale: 1, opacity: 1 })
+```
+
+```js
+// Spinning loader
+const spinner = cx(size({ w: 20, h: 20 }), animate({ name: "spin", duration: 800, repeat: Infinity, ease: "linear" }))
+```
+
+```js
+// Card with hover lift
+const card = cx(
+  box({ fill: "surface", raise: "sm" }),
+  transform({
+    duration: 200, ease: "out",
+    on: { hover: { y: -4, scale: 1.01 } }
+  })
+)
+```
+
+> `transform()` handles transitions. `animate()` handles `@keyframes`. Use `transform()` for state-toggle UI and hover interactions; use `animate()` for entrance animations and looping effects.
+
+---
+
 ## Composing with `cx()`
 
 `cx()` merges multiple `PKClass` values (or plain strings) into one. It returns a `PKClass` so `.class` and template literals keep working.
@@ -693,54 +778,15 @@ module.exports = (data) => `
 
 ---
 
-## Full browser example
-
-```html
-<!DOCTYPE html>
-<html>
-<head><title>pk.js example</title></head>
-<body>
-<script src="pk.js"></script>
-<script>
-  const { box, text, layout, space, size, animate, cx, theme, global } = pk
-
-  theme({
-    colors: { bg: "#fff", surface: "#f4f4f5", ink: "#111", accent: "#6366f1" }
-  })
-
-  global("body", { fill: "bg", ink: "ink", font: "sans" })
-
-  const card = cx(
-    box({ fill: "surface", round: "xl", raise: "md" }),
-    space({ pad: 32 }),
-    layout({ col: true, align: ["start", "start"] }),
-    space({ between: 16 }),
-    animate({ name: "slideUp", duration: 400 })
-  )
-
-  const title = text({ size: 22, weight: "bold" })
-  const body  = text({ size: 15, ink: "muted", leading: 1.7 })
-
-  document.body.innerHTML = `
-    <div class="${card}" style="max-width:380px;margin:64px auto">
-      <h2 class="${title}">Hello pk.js</h2>
-      <p class="${body}">Styles written in JS, scoped by default.</p>
-    </div>
-  `
-</script>
-</body>
-</html>
-```
 
 ---
 
 ## What pk.js does not cover
 
-- `transform`, `transition`, `animation` shorthand (beyond `animate()`) — write these as inline styles or in a regular stylesheet
-- `position: relative` shorthand — use `place({ type: "relative" })`
-- SSR in environments without `fs` (e.g. Deno) — use `flush()` with no argument to get the CSS string and write it yourself
+- `transition` on arbitrary CSS properties beyond what `transform()` exposes — write a `global()` rule or inline style for very unusual cases
+- Environments without `fs` (e.g. Deno) — use `flush()` with no argument to get the CSS string and write it yourself with your runtime's file API
 
-For anything outside the eight functions, a regular `<style>` tag or `.css` file works alongside pk.js without conflict.
+For anything outside the nine functions, a regular `.css` file works alongside pk.js without conflict.
 
 ---
 
