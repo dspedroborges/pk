@@ -1,713 +1,515 @@
-"use strict";
+// ─── State ────────────────────────────────────────────────────────────────────
 
-// ─────────────────────────────────────────────────────────────────
-// RETURN TYPE
-// Wraps a class name string so it works in template literals
-// as-is, and also exposes a .class property for explicit access.
-// ─────────────────────────────────────────────────────────────────
+const _rules = new Map();   // className → css rule string
+const _keyframes = new Map(); // name → @keyframes string
+let _counter = 0;
+let _themeVars = {};
 
-function PKClass(classStr) {
-  if (!(this instanceof PKClass)) return new PKClass(classStr);
-  this._c = classStr;
+function uid() {
+  return `x${(++_counter).toString(36)}`;
 }
 
-PKClass.prototype.toString = function () { return this._c; };
-PKClass.prototype.valueOf  = function () { return this._c; };
-Object.defineProperty(PKClass.prototype, "class", {
-    get() { return this._c; }
-  });
-
-// ─────────────────────────────────────────────────────────────────
-// STORAGE
-// All generated CSS accumulates in cssBuffer.
-// Call flush() to write to disk or get the string.
-// ─────────────────────────────────────────────────────────────────
-
-let cssBuffer = "";
-const cache   = new Map();
-
-function injectRaw(css) {
-  cssBuffer += css;
+function addRule(cls, declarations, extra = "") {
+  const body = declarations.filter(Boolean).join("; ");
+  _rules.set(cls, `.${cls}${extra} { ${body} }`);
 }
 
-// ─────────────────────────────────────────────────────────────────
-// FLUSH  — write buffer to file and/or return CSS string
-// ─────────────────────────────────────────────────────────────────
-
-function flush(filepath) {
-  if (filepath) {
-    require("fs").writeFileSync(filepath, cssBuffer, "utf8");
-  }
-  return cssBuffer;
+function addRaw(cls, raw) {
+  _rules.set(cls, raw);
 }
 
-// ─────────────────────────────────────────────────────────────────
-// RESET  — clear buffer + cache (use between SSR requests)
-// ─────────────────────────────────────────────────────────────────
+// ─── Theme ────────────────────────────────────────────────────────────────────
 
-function reset() {
-  cssBuffer = "";
-  cache.clear();
-  injectedKeyframes.clear();
-}
-
-// ─────────────────────────────────────────────────────────────────
-// HASH  (FNV-1a, 32-bit)
-// ─────────────────────────────────────────────────────────────────
-
-function hash(str) {
-  let h = 2166136261;
-  for (let i = 0; i < str.length; i++) {
-    h ^= str.charCodeAt(i);
-    h = Math.imul(h, 16777619) >>> 0;
-  }
-  return h.toString(36).slice(0, 7);
-}
-
-// ─────────────────────────────────────────────────────────────────
-// REGISTER  (hash → inject once → return class name string)
-// ─────────────────────────────────────────────────────────────────
-
-function register(css) {
-  const key  = hash(css);
-  const name = "pk-" + key;
-  if (!cache.has(key)) {
-    cache.set(key, name);
-    injectRaw(css.replaceAll("__c__", name));
-  }
-  return name;
-}
-
-// ─────────────────────────────────────────────────────────────────
-// TOKENS
-// ─────────────────────────────────────────────────────────────────
-
-const COLORS = {
-  bg:      "var(--pk-bg,      #ffffff)",
-  surface: "var(--pk-surface, #f4f4f5)",
-  border:  "var(--pk-border,  #d4d4d8)",
-  ink:     "var(--pk-ink,     #09090b)",
-  muted:   "var(--pk-muted,   #71717a)",
-  accent:  "var(--pk-accent,  #3b82f6)",
-  success: "var(--pk-success, #22c55e)",
-  warning: "var(--pk-warning, #f59e0b)",
-  danger:  "var(--pk-danger,  #ef4444)",
+const _defaultColors = {
+  bg: "#ffffff", surface: "#f4f4f5", border: "#d4d4d8",
+  ink: "#09090b", muted: "#71717a", accent: "#3b82f6",
+  success: "#22c55e", warning: "#f59e0b", danger: "#ef4444",
 };
 
-const FONTS = {
-  sans:  "var(--pk-font-sans,  system-ui, sans-serif)",
-  serif: "var(--pk-font-serif, Georgia, serif)",
-  mono:  "var(--pk-font-mono,  ui-monospace, monospace)",
+const _defaultFonts = {
+  sans: "system-ui, sans-serif",
+  serif: "Georgia, serif",
+  mono: "ui-monospace, monospace",
 };
 
-const ROUND = {
-  none: "0",
-  sm:   "4px",
-  md:   "8px",
-  lg:   "12px",
-  xl:   "16px",
-  full: "9999px",
-};
+let _colors = { ..._defaultColors };
+let _fonts  = { ..._defaultFonts };
 
-const SHADOW = {
+function theme({ colors = {}, fonts = {} } = {}) {
+  _colors = { ..._defaultColors, ...colors };
+  _fonts  = { ..._defaultFonts,  ...fonts };
+}
+
+function resolveColor(val) {
+  if (!val) return null;
+  return _colors[val] ?? val;
+}
+
+function resolveFont(val) {
+  if (!val) return null;
+  return _fonts[val] ?? val;
+}
+
+// ─── Token maps ───────────────────────────────────────────────────────────────
+
+const _shadows = {
   none: "none",
-  sm:   "0 1px 3px 0 rgba(0,0,0,.10), 0 1px 2px -1px rgba(0,0,0,.10)",
-  md:   "0 4px 6px -1px rgba(0,0,0,.10), 0 2px 4px -2px rgba(0,0,0,.10)",
-  lg:   "0 10px 15px -3px rgba(0,0,0,.10), 0 4px 6px -4px rgba(0,0,0,.10)",
-  xl:   "0 20px 25px -5px rgba(0,0,0,.10), 0 8px 10px -6px rgba(0,0,0,.10)",
+  sm:   "0 1px 2px 0 rgba(0,0,0,.05)",
+  md:   "0 4px 6px -1px rgba(0,0,0,.1), 0 2px 4px -2px rgba(0,0,0,.1)",
+  lg:   "0 10px 15px -3px rgba(0,0,0,.1), 0 4px 6px -4px rgba(0,0,0,.1)",
+  xl:   "0 20px 25px -5px rgba(0,0,0,.1), 0 8px 10px -6px rgba(0,0,0,.1)",
 };
 
-const WEIGHT = {
-  thin:   "100",
-  light:  "300",
-  normal: "400",
-  medium: "500",
-  semi:   "600",
-  bold:   "700",
-  black:  "900",
+const _rounds = {
+  none: "0", sm: "4px", md: "8px", lg: "12px", xl: "16px", full: "9999px",
 };
 
-const BREAKPOINTS = {
-  sm:  "480px",
-  md:  "768px",
-  lg:  "1024px",
-  xl:  "1280px",
+const _weights = {
+  thin: "100", light: "300", normal: "400",
+  medium: "500", semi: "600", bold: "700", black: "900",
 };
 
-// ─────────────────────────────────────────────────────────────────
-// VALUE RESOLVERS
-// ─────────────────────────────────────────────────────────────────
-
-const resolveColor  = v => COLORS[v]  ?? v;
-const resolveFont   = v => FONTS[v]   ?? v;
-const resolveRound  = v => typeof v === "number" ? v + "px" : (ROUND[v]  ?? v);
-const resolveShadow = v => SHADOW[v]  ?? v;
-const resolveWeight = v => typeof v === "number" ? String(v) : (WEIGHT[v] ?? v);
-
-function px(v) { return typeof v === "number" ? v + "px" : v; }
-
-function resolveSizeAxis(v, axis) {
-  if (v === "screen") return axis === "w" ? "100vw" : "100vh";
-  if (typeof v === "number") return v + "px";
-  return { full: "100%", auto: "auto", fit: "fit-content",
-    min: "min-content", max: "max-content" }[v] ?? v;
+function resolveSize(val, axis = "width") {
+  if (val === "full")   return "100%";
+  if (val === "screen") return axis === "width" ? "100vw" : "100vh";
+  if (val === "auto")   return "auto";
+  if (val === "fit")    return "fit-content";
+  if (val === "min")    return "min-content";
+  if (val === "max")    return "max-content";
+  if (typeof val === "number") return `${val}px`;
+  return val;
 }
 
-function resolveXY(v) {
-  if (Array.isArray(v)) { const [x, y] = v; return `${px(y)} ${px(x)}`; }
-  return px(v);
-}
+// ─── box() ────────────────────────────────────────────────────────────────────
 
-function resolveAlign(v) {
-  return { start: "flex-start", end: "flex-end", center: "center",
-    stretch: "stretch", between: "space-between",
-    around: "space-around", evenly: "space-evenly",
-    baseline: "baseline" }[v] ?? v;
-}
+function box({
+  color,
+  fill,
+  padding, paddingX, paddingY, paddingTop, paddingRight, paddingBottom, paddingLeft,
+  p, px, py, pt, pr, pb, pl,
+  margin, marginX, marginY, marginTop, marginRight, marginBottom, marginLeft,
+  m, mx, my, mt, mr, mb, ml,
+  gap, gapX, gapY,
+  round,
+  raise,
+  opacity,
+  border, borderTop, borderBottom, borderLeft, borderRight,
+  shadow,
+  overflow, overflowX, overflowY,
+  cursor,
+  display,
+  ink,
+  lineColor,
+  outline,
+} = {}) {
+  const cls = uid();
+  const d = [];
 
-// ─────────────────────────────────────────────────────────────────
-// RESPONSIVE WRAPPER
-// ─────────────────────────────────────────────────────────────────
+  const bg = fill ?? color;
+  if (bg) d.push(`background-color: ${resolveColor(bg)}`);
+  if (ink) d.push(`color: ${resolveColor(ink)}`);
+  if (lineColor) d.push(`border-color: ${resolveColor(lineColor)}`);
 
-function responsive(value, resolveFn) {
-  if (value == null) return [];
-  if (typeof value !== "object" || Array.isArray(value)) {
-    return [[null, resolveFn(value)]];
-  }
-  const entries = [];
-  if ("base" in value) entries.push([null, resolveFn(value.base)]);
-  for (const [bp, minW] of Object.entries(BREAKPOINTS)) {
-    if (bp in value) entries.push([minW, resolveFn(value[bp])]);
-  }
-  return entries;
-}
+  const pxv = paddingX ?? px;
+  const pyv = paddingY ?? py;
+  const pv  = padding  ?? p;
+  if (pv  !== undefined) d.push(`padding: ${typeof pv === "number" ? pv+"px" : pv}`);
+  if (pxv !== undefined) { const v = typeof pxv==="number"?pxv+"px":pxv; d.push(`padding-left: ${v}; padding-right: ${v}`); }
+  if (pyv !== undefined) { const v = typeof pyv==="number"?pyv+"px":pyv; d.push(`padding-top: ${v}; padding-bottom: ${v}`); }
+  if ((paddingTop    ?? pt) !== undefined) d.push(`padding-top: ${typeof (paddingTop??pt)==="number"?(paddingTop??pt)+"px":(paddingTop??pt)}`);
+  if ((paddingRight  ?? pr) !== undefined) d.push(`padding-right: ${typeof (paddingRight??pr)==="number"?(paddingRight??pr)+"px":(paddingRight??pr)}`);
+  if ((paddingBottom ?? pb) !== undefined) d.push(`padding-bottom: ${typeof (paddingBottom??pb)==="number"?(paddingBottom??pb)+"px":(paddingBottom??pb)}`);
+  if ((paddingLeft   ?? pl) !== undefined) d.push(`padding-left: ${typeof (paddingLeft??pl)==="number"?(paddingLeft??pl)+"px":(paddingLeft??pl)}`);
 
-function rp(prop, value, resolveFn) {
-  if (value == null) return [];
-  return responsive(value, resolveFn ?? (v => v))
-  .map(([mq, v]) => ({ mq, decl: `${prop}:${v}` }));
-}
+  const mxv = marginX ?? mx;
+  const myv = marginY ?? my;
+  const mv  = margin  ?? m;
+  if (mv  !== undefined) d.push(`margin: ${typeof mv === "number" ? mv+"px" : mv}`);
+  if (mxv !== undefined) { const v = typeof mxv==="number"?mxv+"px":mxv; d.push(`margin-left: ${v}; margin-right: ${v}`); }
+  if (myv !== undefined) { const v = typeof myv==="number"?myv+"px":myv; d.push(`margin-top: ${v}; margin-bottom: ${v}`); }
+  if ((marginTop    ?? mt) !== undefined) d.push(`margin-top: ${typeof (marginTop??mt)==="number"?(marginTop??mt)+"px":(marginTop??mt)}`);
+  if ((marginRight  ?? mr) !== undefined) d.push(`margin-right: ${typeof (marginRight??mr)==="number"?(marginRight??mr)+"px":(marginRight??mr)}`);
+  if ((marginBottom ?? mb) !== undefined) d.push(`margin-bottom: ${typeof (marginBottom??mb)==="number"?(marginBottom??mb)+"px":(marginBottom??mb)}`);
+  if ((marginLeft   ?? ml) !== undefined) d.push(`margin-left: ${typeof (marginLeft??ml)==="number"?(marginLeft??ml)+"px":(marginLeft??ml)}`);
 
-// ─────────────────────────────────────────────────────────────────
-// PSEUDO STATES
-// ─────────────────────────────────────────────────────────────────
+  if (gap  !== undefined) d.push(`gap: ${typeof gap==="number"?gap+"px":gap}`);
+  if (gapX !== undefined) d.push(`column-gap: ${typeof gapX==="number"?gapX+"px":gapX}`);
+  if (gapY !== undefined) d.push(`row-gap: ${typeof gapY==="number"?gapY+"px":gapY}`);
 
-const PSEUDO_SELECTORS = {
-  hover:        ":hover",
-  focus:        ":focus",
-  active:       ":active",
-  disabled:     ":disabled",
-  checked:      ":checked",
-  selected:     `:is(:checked,[aria-selected="true"])`,
-  focusVisible: ":focus-visible",
-  focusWithin:  ":focus-within",
-  placeholder:  "::placeholder",
-  before:       "::before",
-  after:        "::after",
-  first:        ":first-child",
-  last:         ":last-child",
-  odd:          ":nth-child(odd)",
-  even:         ":nth-child(even)",
-};
+  if (round   !== undefined) d.push(`border-radius: ${_rounds[round] ?? (typeof round==="number"?round+"px":round)}`);
+  if (raise   !== undefined) d.push(`box-shadow: ${_shadows[raise] ?? raise}`);
+  if (shadow  !== undefined) d.push(`box-shadow: ${_shadows[shadow] ?? shadow}`);
+  if (opacity !== undefined) d.push(`opacity: ${opacity}`);
+  if (display !== undefined) d.push(`display: ${display}`);
+  if (cursor  !== undefined) d.push(`cursor: ${cursor}`);
+  if (overflow  !== undefined) d.push(`overflow: ${overflow}`);
+  if (overflowX !== undefined) d.push(`overflow-x: ${overflowX}`);
+  if (overflowY !== undefined) d.push(`overflow-y: ${overflowY}`);
+  if (outline !== undefined) d.push(`outline: ${outline}`);
 
-function processPseudos(on, propBuilder) {
-  if (!on) return null;
-  const pseudoMap = {};
-  for (const [key, styles] of Object.entries(on)) {
-    const selector = PSEUDO_SELECTORS[key];
-    if (!selector || !styles) continue;
-    pseudoMap[selector] = propBuilder(styles);
-  }
-  return pseudoMap;
-}
-
-// ─────────────────────────────────────────────────────────────────
-// CSS ASSEMBLER
-// ─────────────────────────────────────────────────────────────────
-
-function assemble(items, pseudoMap) {
-  const groups = new Map();
-  const ensureGroup = mq => {
-    if (!groups.has(mq)) groups.set(mq, { base: [], pseudos: {} });
-    return groups.get(mq);
+  const borderVal = (v) => {
+    if (v === true) return "1px solid";
+    if (typeof v === "number") return `${v}px solid`;
+    return v;
   };
+  if (border       !== undefined) d.push(`border: ${borderVal(border)}`);
+  if (borderTop    !== undefined) d.push(`border-top: ${borderVal(borderTop)}`);
+  if (borderBottom !== undefined) d.push(`border-bottom: ${borderVal(borderBottom)}`);
+  if (borderLeft   !== undefined) d.push(`border-left: ${borderVal(borderLeft)}`);
+  if (borderRight  !== undefined) d.push(`border-right: ${borderVal(borderRight)}`);
 
-  for (const { mq, decl } of items) ensureGroup(mq).base.push(decl);
-
-  if (pseudoMap) {
-    for (const [pseudo, pseudoItems] of Object.entries(pseudoMap)) {
-      for (const { mq, decl } of pseudoItems) {
-        const g = ensureGroup(mq);
-        if (!g.pseudos[pseudo]) g.pseudos[pseudo] = [];
-        g.pseudos[pseudo].push(decl);
-      }
-    }
-  }
-
-  let css = "";
-  for (const [mq, { base, pseudos }] of groups) {
-    const baseBlock = base.length ? `.__c__{${base.join(";")}}` : "";
-    let pseudoBlocks = "";
-    for (const [pseudo, ds] of Object.entries(pseudos)) {
-      if (ds.length) pseudoBlocks += `.__c__${pseudo}{${ds.join(";")}}`;
-    }
-    const inner = baseBlock + pseudoBlocks;
-    if (!inner) continue;
-    css += mq ? `@media(min-width:${mq}){${inner}}` : inner;
-  }
-  return css;
+  addRule(cls, d);
+  return cls;
 }
 
-// ─────────────────────────────────────────────────────────────────
-// BOX
-// ─────────────────────────────────────────────────────────────────
+// ─── text() ───────────────────────────────────────────────────────────────────
 
-function buildBoxDecls(p) {
-  const items = [];
-  items.push(...rp("background",    p.fill,    resolveColor));
-  items.push(...rp("color",         p.ink,     resolveColor));
-  items.push(...rp("border-radius", p.round,   resolveRound));
-  items.push(...rp("box-shadow",    p.raise,   resolveShadow));
-  items.push(...rp("opacity",       p.opacity, v => String(v)));
+function text({
+  size, weight, color, font, leading, tracking,
+  align, italic, underline, strike, upper, lower, cap,
+  nowrap, clamp,
+} = {}) {
+  const cls = uid();
+  const d = [];
 
-  if (p.clip != null) items.push({ mq: null, decl: `overflow:${p.clip ? "hidden" : "visible"}` });
-  if (p.line != null) {
-    items.push(...rp("border-width", p.line, v => typeof v === "number" ? v + "px" : v));
-    items.push({ mq: null, decl: "border-style:solid" });
-  }
-  items.push(...rp("border-color", p.lineColor, resolveColor));
-  if (p.line != null && p.lineColor == null) {
-    items.push({ mq: null, decl: `border-color:${resolveColor("border")}` });
-  }
-  return items;
-}
+  if (size    !== undefined) d.push(`font-size: ${typeof size==="number"?size+"px":size}`);
+  if (weight  !== undefined) d.push(`font-weight: ${_weights[weight] ?? weight}`);
+  if (color   !== undefined) d.push(`color: ${resolveColor(color)}`);
+  if (font    !== undefined) d.push(`font-family: ${resolveFont(font)}`);
+  if (leading !== undefined) d.push(`line-height: ${leading}`);
+  if (tracking!== undefined) d.push(`letter-spacing: ${tracking}`);
+  if (align   !== undefined) d.push(`text-align: ${align}`);
+  if (italic)                d.push(`font-style: italic`);
+  if (nowrap)                d.push(`white-space: nowrap`);
 
-function box(props) {
-  const { on, ...rest } = props;
-  return PKClass(register(assemble(buildBoxDecls(rest), processPseudos(on, buildBoxDecls))));
-}
+  const decorations = [];
+  if (underline) decorations.push("underline");
+  if (strike)    decorations.push("line-through");
+  if (decorations.length) d.push(`text-decoration: ${decorations.join(" ")}`);
 
-// ─────────────────────────────────────────────────────────────────
-// TEXT
-// ─────────────────────────────────────────────────────────────────
+  const transforms = [];
+  if (upper) transforms.push("uppercase");
+  if (lower) transforms.push("lowercase");
+  if (cap)   transforms.push("capitalize");
+  if (transforms.length) d.push(`text-transform: ${transforms[0]}`);
 
-function buildTextDecls(p) {
-  const items = [];
-  items.push(...rp("font-size",      p.size,     v => typeof v === "number" ? v + "px" : v));
-  items.push(...rp("font-weight",    p.weight,   resolveWeight));
-  items.push(...rp("color",          p.ink,      resolveColor));
-  items.push(...rp("font-family",    p.font,     resolveFont));
-  items.push(...rp("line-height",    p.leading,  v => String(v)));
-  items.push(...rp("letter-spacing", p.tracking, v => v));
-  items.push(...rp("text-align",     p.align,    v => v));
-
-  if (p.italic  != null) items.push({ mq: null, decl: `font-style:${p.italic  ? "italic"  : "normal"}` });
-  if (p.under   != null) items.push({ mq: null, decl: `text-decoration:${p.under   ? "underline"    : "none"}` });
-  if (p.strike  != null) items.push({ mq: null, decl: `text-decoration:${p.strike  ? "line-through" : "none"}` });
-  if (p.upper   != null) items.push({ mq: null, decl: `text-transform:${ p.upper   ? "uppercase"    : "none"}` });
-  if (p.lower   != null) items.push({ mq: null, decl: `text-transform:${ p.lower   ? "lowercase"    : "none"}` });
-  if (p.cap     != null) items.push({ mq: null, decl: `text-transform:${ p.cap     ? "capitalize"   : "none"}` });
-  if (p.nowrap  != null) items.push({ mq: null, decl: `white-space:${    p.nowrap  ? "nowrap"       : "normal"}` });
-  if (p.clamp   != null) {
-    items.push({ mq: null, decl: "display:-webkit-box" });
-    items.push({ mq: null, decl: "-webkit-box-orient:vertical" });
-    items.push({ mq: null, decl: "overflow:hidden" });
-    items.push({ mq: null, decl: `-webkit-line-clamp:${p.clamp}` });
-  }
-  return items;
-}
-
-function text(props) {
-  const { on, ...rest } = props;
-  return PKClass(register(assemble(buildTextDecls(rest), processPseudos(on, buildTextDecls))));
-}
-
-// ─────────────────────────────────────────────────────────────────
-// LAYOUT
-// ─────────────────────────────────────────────────────────────────
-
-function buildLayoutDecls(p) {
-  const items    = [];
-  const isGrid   = p.grid   != null;
-  const isRow    = p.row    === true;
-  const isCol    = p.col    === true;
-  const isInline = p.inline === true;
-
-  if (isGrid) {
-    items.push({ mq: null, decl: `display:${isInline ? "inline-grid" : "grid"}` });
-    items.push(...rp("grid-template-columns", p.grid,
-        v => typeof v === "number" ? `repeat(${v},1fr)` : v));
-  } else if (isRow || isCol) {
-    items.push({ mq: null, decl: `display:${isInline ? "inline-flex" : "flex"}` });
-    items.push({ mq: null, decl: `flex-direction:${isCol ? "column" : "row"}` });
-  }
-
-  if (p.wrap != null) items.push({ mq: null, decl: `flex-wrap:${p.wrap ? "wrap" : "nowrap"}` });
-
-  if (p.align != null) {
-    items.push(...responsive(p.align, v => v).flatMap(([mq, val]) => {
-          const [xVal, yVal] = Array.isArray(val) ? val : [val, val];
-          const xProp = isGrid ? "justify-items"  : isCol ? "align-items"     : "justify-content";
-          const yProp = isGrid ? "align-items"     : isCol ? "justify-content" : "align-items";
-          return [
-            { mq, decl: `${xProp}:${resolveAlign(xVal)}` },
-            { mq, decl: `${yProp}:${resolveAlign(yVal)}` },
-          ];
-        }));
-  }
-  return items;
-}
-
-function layout(props) {
-  const { on, ...rest } = props;
-  return PKClass(register(assemble(buildLayoutDecls(rest), processPseudos(on, buildLayoutDecls))));
-}
-
-// ─────────────────────────────────────────────────────────────────
-// SPACE
-// ─────────────────────────────────────────────────────────────────
-
-function buildSpaceDecls(p) {
-  const items = [];
-  items.push(...rp("padding", p.pad, resolveXY));
-  items.push(...rp("margin",  p.gap, resolveXY));
-  if (p.between != null) {
-    if (Array.isArray(p.between)) {
-      const [x, y] = p.between;
-      items.push(...rp("column-gap", x, v => px(v)));
-      items.push(...rp("row-gap",    y, v => px(v)));
-    } else {
-      items.push(...rp("gap", p.between, v => px(v)));
-    }
-  }
-  return items;
-}
-
-function space(props) {
-  const { on, ...rest } = props;
-  return PKClass(register(assemble(buildSpaceDecls(rest), processPseudos(on, buildSpaceDecls))));
-}
-
-// ─────────────────────────────────────────────────────────────────
-// SIZE
-// ─────────────────────────────────────────────────────────────────
-
-function buildSizeDecls(p) {
-  const items = [];
-  items.push(...rp("width",        p.w,     v => resolveSizeAxis(v, "w")));
-  items.push(...rp("height",       p.h,     v => resolveSizeAxis(v, "h")));
-  items.push(...rp("min-width",    p.minW,  v => resolveSizeAxis(v, "w")));
-  items.push(...rp("min-height",   p.minH,  v => resolveSizeAxis(v, "h")));
-  items.push(...rp("max-width",    p.maxW,  v => resolveSizeAxis(v, "w")));
-  items.push(...rp("max-height",   p.maxH,  v => resolveSizeAxis(v, "h")));
-  items.push(...rp("aspect-ratio", p.ratio, v => v));
-  return items;
-}
-
-function size(props) {
-  const { on, ...rest } = props;
-  return PKClass(register(assemble(buildSizeDecls(rest), processPseudos(on, buildSizeDecls))));
-}
-
-// ─────────────────────────────────────────────────────────────────
-// PLACE
-// ─────────────────────────────────────────────────────────────────
-
-function buildPlaceDecls(p) {
-  const items = [];
-  if (p.type != null) items.push({ mq: null, decl: `position:${p.type}` });
-  items.push(...rp("left",    p.x,      v => px(v)));
-  items.push(...rp("top",     p.y,      v => px(v)));
-  items.push(...rp("right",   p.right,  v => px(v)));
-  items.push(...rp("bottom",  p.bottom, v => px(v)));
-  items.push(...rp("z-index", p.z,      v => String(v)));
-  if (p.inset != null) {
-    if (Array.isArray(p.inset)) {
-      const [y, x] = p.inset;
-      items.push({ mq: null, decl: `inset:${px(y)} ${px(x)} ${px(y)} ${px(x)}` });
-    } else {
-      items.push({ mq: null, decl: `inset:${px(p.inset)}` });
-    }
-  }
-  return items;
-}
-
-function place(props) {
-  return PKClass(register(assemble(buildPlaceDecls(props), null)));
-}
-
-// ─────────────────────────────────────────────────────────────────
-// DECOR
-// ─────────────────────────────────────────────────────────────────
-
-function buildDecorDecls(p) {
-  const items = [];
-  items.push(...rp("cursor",               p.cursor,     v => v));
-  items.push(...rp("user-select",          p.select,     v => v));
-  items.push(...rp("caret-color",          p.caret,      resolveColor));
-  items.push(...rp("pointer-events",       p.events,
-      v => v === false ? "none" : v === true ? "auto" : v));
-  items.push(...rp("appearance",           p.appearance, v => v));
-  items.push(...rp("-webkit-appearance",   p.appearance, v => v));
-  items.push(...rp("scrollbar-width",      p.scroll,     v => v));
-  items.push(...rp("overflow-x",           p.scrollX,    v => v));
-  items.push(...rp("overflow-y",           p.scrollY,    v => v));
-  if (p.scrollColor != null) {
-    const [thumb, track] = Array.isArray(p.scrollColor)
-    ? p.scrollColor.map(resolveColor)
-    : [resolveColor(p.scrollColor), "transparent"];
-    items.push({ mq: null, decl: `scrollbar-color:${thumb} ${track}` });
-  }
-  return items;
-}
-
-function decor(props) {
-  const { on, selectColor, selectInk, ...rest } = props;
-  const name = register(assemble(buildDecorDecls(rest), processPseudos(on, buildDecorDecls)));
-  if (selectColor != null || selectInk != null) {
-    const bg  = resolveColor(selectColor ?? "accent");
-    const ink = resolveColor(selectInk   ?? "bg");
-    injectRaw(`.${name}::selection{background:${bg};color:${ink}}`);
-  }
-  return PKClass(name);
-}
-
-// ─────────────────────────────────────────────────────────────────
-// ANIMATE
-// ─────────────────────────────────────────────────────────────────
-
-const KEYFRAME_PRESETS = {
-  fadeIn:    { from: { opacity: 0 },                               to: { opacity: 1 } },
-  fadeOut:   { from: { opacity: 1 },                               to: { opacity: 0 } },
-  slideUp:   { from: { opacity: 0, transform: "translateY(16px)" },to: { opacity: 1, transform: "translateY(0)" } },
-  slideDown: { from: { opacity: 0, transform: "translateY(-16px)"},to: { opacity: 1, transform: "translateY(0)" } },
-  slideLeft: { from: { opacity: 0, transform: "translateX(16px)" },to: { opacity: 1, transform: "translateX(0)" } },
-  slideRight:{ from: { opacity: 0, transform: "translateX(-16px)"},to: { opacity: 1, transform: "translateX(0)" } },
-  scaleIn:   { from: { opacity: 0, transform: "scale(0.9)" },      to: { opacity: 1, transform: "scale(1)" } },
-  scaleOut:  { from: { opacity: 1, transform: "scale(1)" },        to: { opacity: 0, transform: "scale(0.9)" } },
-  spin:      { from: { transform: "rotate(0deg)" },                to: { transform: "rotate(360deg)" } },
-  ping:      { "0%": { transform: "scale(1)", opacity: 1 }, "75%,100%": { transform: "scale(2)", opacity: 0 } },
-  pulse:     { "0%,100%": { opacity: 1 },                          "50%": { opacity: 0.4 } },
-  bounce:    {
-    "0%,100%": { transform: "translateY(0)",    "animation-timing-function": "cubic-bezier(0.8,0,1,1)" },
-    "50%":     { transform: "translateY(-25%)", "animation-timing-function": "cubic-bezier(0,0,0.2,1)" },
-  },
-  shake: {
-    "0%,100%": { transform: "translateX(0)" },
-    "15%":     { transform: "translateX(-6px)" },
-    "30%":     { transform: "translateX(6px)" },
-    "45%":     { transform: "translateX(-4px)" },
-    "60%":     { transform: "translateX(4px)" },
-    "75%":     { transform: "translateX(-2px)" },
-    "90%":     { transform: "translateX(2px)" },
-  },
-  float: {
-    "0%,100%": { transform: "translateY(0)" },
-    "50%":     { transform: "translateY(-8px)" },
-  },
-  flip: {
-    from: { transform: "perspective(400px) rotateY(0deg)" },
-    to:   { transform: "perspective(400px) rotateY(360deg)" },
-  },
-  blink: {
-    "0%,100%": { opacity: 1 },
-    "50%":     { opacity: 0 },
-  },
-};
-
-const EASE_MAP = {
-  linear:  "linear",
-  in:      "cubic-bezier(0.4,0,1,1)",
-  out:     "cubic-bezier(0,0,0.2,1)",
-  "in-out":"cubic-bezier(0.4,0,0.2,1)",
-};
-
-const injectedKeyframes = new Set();
-
-function buildKeyframeCSS(name, frames) {
-  let css = `@keyframes ${name}{`;
-    for (const [stop, styles] of Object.entries(frames)) {
-      css += `${stop}{${Object.entries(styles).map(([p,v]) => `${p}:${v}`).join(";")}}`;
-    }
-    return css + "}";
-}
-
-function animate(props = {}) {
-  const {
-    name      = "fadeIn",
-    keyframes : customFrames = null,
-    duration  = 300,
-    ease      = "out",
-    delay     = 0,
-    repeat    = 1,
-    fill      = "both",
-    direction = "normal",
-  } = props;
-
-  const frameName = customFrames ? `pk-kf-${hash(JSON.stringify(customFrames))}` : name;
-  const frames    = customFrames ?? KEYFRAME_PRESETS[name];
-
-  if (!frames) {
-    throw new Error(
-      `pk.animate: unknown preset "${name}". ` +
-      `Available: ${Object.keys(KEYFRAME_PRESETS).join(", ")}`
+  if (clamp !== undefined) {
+    d.push(
+      `display: -webkit-box`,
+      `-webkit-line-clamp: ${clamp}`,
+      `-webkit-box-orient: vertical`,
+      `overflow: hidden`
     );
   }
 
-  if (!injectedKeyframes.has(frameName)) {
-    injectedKeyframes.add(frameName);
-    injectRaw(buildKeyframeCSS(frameName, frames));
-  }
-
-  const animValue = [
-    frameName,
-    typeof duration === "number" ? `${duration}ms` : duration,
-    EASE_MAP[ease] ?? ease,
-    typeof delay === "number" ? `${delay}ms` : delay,
-    repeat === Infinity ? "infinite" : String(repeat),
-    fill,
-    direction,
-  ].join(" ");
-
-  return PKClass(register(`.__c__{animation:${animValue}}`));
+  addRule(cls, d);
+  return cls;
 }
 
-// ─────────────────────────────────────────────────────────────────
-// TRANSFORM
-// x, y, z3d, scale, scaleX, scaleY, rotate, skewX, skewY, origin
-// + transition: duration, ease, delay, prop
-// + visibility helpers: visible, pointer
-// ─────────────────────────────────────────────────────────────────
+// ─── layout() ─────────────────────────────────────────────────────────────────
 
-const ORIGIN_TOKENS = {
-  center:       "center",
-  top:          "top center",
-  bottom:       "bottom center",
-  left:         "center left",
-  right:        "center right",
-  "top-left":   "top left",
-  "top-right":  "top right",
-  "bottom-left":"bottom left",
-  "bottom-right":"bottom right",
+function layout({
+  type = "stack",
+  x,
+  y,
+  cols,
+  wrap,
+  inline,
+  gap,
+  gapX,
+  gapY,
+} = {}) {
+  const cls = uid();
+  const d = [];
+
+  if (gap  !== undefined) d.push(`gap: ${typeof gap  === "number" ? gap  + "px" : gap}`);
+  if (gapX !== undefined) d.push(`column-gap: ${typeof gapX === "number" ? gapX + "px" : gapX}`);
+  if (gapY !== undefined) d.push(`row-gap: ${typeof gapY === "number" ? gapY + "px" : gapY}`);
+
+  if (type === "grid") {
+    d.push(`display: ${inline ? "inline-grid" : "grid"}`);
+    if (cols !== undefined) d.push(`grid-template-columns: repeat(${cols}, minmax(0, 1fr))`);
+    if (x) {
+      const map = { left: "start", right: "end", center: "center", stretch: "stretch" };
+      d.push(`justify-items: ${map[x] ?? x}`);
+    }
+    if (y) {
+      const map = { top: "start", bottom: "end", center: "center", stretch: "stretch" };
+      d.push(`align-items: ${map[y] ?? y}`);
+    }
+  } else {
+    d.push(`display: ${inline ? "inline-flex" : "flex"}`);
+    d.push(`flex-direction: ${type === "row" ? "row" : "column"}`);
+    if (wrap) d.push(`flex-wrap: wrap`);
+
+    const mainAxis = type === "row" ? "justify-content" : "align-items";
+    const crossAxis = type === "row" ? "align-items" : "justify-content";
+
+    const mainMap  = { left: "flex-start", right: "flex-end", center: "center", between: "space-between", around: "space-around", evenly: "space-evenly" };
+    const crossMap = { top: "flex-start",  bottom: "flex-end", center: "center", stretch: "stretch" };
+
+    if (x) d.push(`${type === "row" ? "justify-content" : "align-items"}: ${(type === "row" ? mainMap : crossMap)[x] ?? x}`);
+    if (y) d.push(`${type === "row" ? "align-items" : "justify-content"}: ${(type === "row" ? crossMap : mainMap)[y] ?? y}`);
+  }
+
+  addRule(cls, d);
+  return cls;
+}
+
+// ─── size() ───────────────────────────────────────────────────────────────────
+
+function size({
+  width, w,
+  height, h,
+  minW, maxW,
+  minH, maxH,
+} = {}) {
+  const cls = uid();
+  const d = [];
+
+  const wv = width ?? w;
+  const hv = height ?? h;
+
+  if (wv   !== undefined) d.push(`width: ${resolveSize(wv, "width")}`);
+  if (hv   !== undefined) d.push(`height: ${resolveSize(hv, "height")}`);
+  if (minW !== undefined) d.push(`min-width: ${resolveSize(minW, "width")}`);
+  if (maxW !== undefined) d.push(`max-width: ${resolveSize(maxW, "width")}`);
+  if (minH !== undefined) d.push(`min-height: ${resolveSize(minH, "height")}`);
+  if (maxH !== undefined) d.push(`max-height: ${resolveSize(maxH, "height")}`);
+
+  addRule(cls, d);
+  return cls;
+}
+
+// ─── place() ──────────────────────────────────────────────────────────────────
+
+function place({
+  type = "relative",
+  top, right, bottom, left,
+  z, inset,
+} = {}) {
+  const cls = uid();
+  const d = [];
+  const px = (v) => v !== undefined ? (typeof v==="number"?v+"px":v) : null;
+
+  d.push(`position: ${type}`);
+  if (inset !== undefined)  d.push(`inset: ${px(inset)}`);
+  if (top   !== undefined)  d.push(`top: ${px(top)}`);
+  if (right !== undefined)  d.push(`right: ${px(right)}`);
+  if (bottom!== undefined)  d.push(`bottom: ${px(bottom)}`);
+  if (left  !== undefined)  d.push(`left: ${px(left)}`);
+  if (z     !== undefined)  d.push(`z-index: ${z}`);
+
+  addRule(cls, d);
+  return cls;
+}
+
+// ─── decor() ──────────────────────────────────────────────────────────────────
+
+function decor({
+  cursor,
+  select,
+  pointer,
+  resize,
+  appearance,
+  listStyle,
+  outline,
+  outlineOffset,
+  caretColor,
+  accentColor,
+  scrollColor,
+  scrollBehavior,
+  userSelect,
+} = {}) {
+  const cls = uid();
+  const d = [];
+
+  if (cursor      !== undefined) d.push(`cursor: ${cursor}`);
+  if (pointer)                   d.push(`cursor: pointer`);
+  if (select      !== undefined) d.push(`user-select: ${select}`);
+  if (userSelect  !== undefined) d.push(`user-select: ${userSelect}`);
+  if (resize      !== undefined) d.push(`resize: ${resize}`);
+  if (appearance  !== undefined) d.push(`appearance: ${appearance}`);
+  if (listStyle   !== undefined) d.push(`list-style: ${listStyle}`);
+  if (outline     !== undefined) d.push(`outline: ${outline}`);
+  if (outlineOffset!==undefined) d.push(`outline-offset: ${outlineOffset}`);
+  if (caretColor  !== undefined) d.push(`caret-color: ${resolveColor(caretColor)}`);
+  if (accentColor !== undefined) d.push(`accent-color: ${resolveColor(accentColor)}`);
+  if (scrollColor !== undefined) d.push(`scrollbar-color: ${resolveColor(scrollColor)} transparent`);
+  if (scrollBehavior!==undefined)d.push(`scroll-behavior: ${scrollBehavior}`);
+
+  addRule(cls, d);
+  return cls;
+}
+
+// ─── animate() ────────────────────────────────────────────────────────────────
+
+const _keyframesDefs = {
+  fadeIn:    `@keyframes fadeIn    { from { opacity: 0 } to { opacity: 1 } }`,
+  fadeOut:   `@keyframes fadeOut   { from { opacity: 1 } to { opacity: 0 } }`,
+  slideUp:   `@keyframes slideUp   { from { opacity: 0; transform: translateY(16px) } to { opacity: 1; transform: translateY(0) } }`,
+  slideDown: `@keyframes slideDown { from { opacity: 0; transform: translateY(-16px) } to { opacity: 1; transform: translateY(0) } }`,
+  slideLeft: `@keyframes slideLeft { from { opacity: 0; transform: translateX(16px) } to { opacity: 1; transform: translateX(0) } }`,
+  slideRight:`@keyframes slideRight{ from { opacity: 0; transform: translateX(-16px) } to { opacity: 1; transform: translateX(0) } }`,
+  scaleIn:   `@keyframes scaleIn   { from { opacity: 0; transform: scale(.9) } to { opacity: 1; transform: scale(1) } }`,
+  scaleOut:  `@keyframes scaleOut  { from { opacity: 1; transform: scale(1) } to { opacity: 0; transform: scale(.9) } }`,
+  spin:      `@keyframes spin      { from { transform: rotate(0deg) } to { transform: rotate(360deg) } }`,
+  ping:      `@keyframes ping      { 75%,100% { transform: scale(2); opacity: 0 } }`,
+  pulse:     `@keyframes pulse     { 0%,100% { opacity: 1 } 50% { opacity: .4 } }`,
+  bounce:    `@keyframes bounce    { 0%,100% { transform: translateY(0) } 50% { transform: translateY(-12px) } }`,
+  shake:     `@keyframes shake     { 0%,100% { transform: translateX(0) } 20%,60% { transform: translateX(-6px) } 40%,80% { transform: translateX(6px) } }`,
+  float:     `@keyframes float     { 0%,100% { transform: translateY(0) } 50% { transform: translateY(-8px) } }`,
+  flip:      `@keyframes flip      { from { transform: perspective(400px) rotateY(0) } to { transform: perspective(400px) rotateY(360deg) } }`,
+  blink:     `@keyframes blink     { 0%,100% { opacity: 1 } 50% { opacity: 0 } }`,
 };
 
-function buildTransformDecls(p) {
-  const items = [];
+function animate({
+  name,
+  duration = "0.4s",
+  easing   = "ease",
+  delay    = "0s",
+  count    = 1,
+  fill     = "both",
+  direction,
+} = {}) {
+  if (!name || !_keyframesDefs[name]) throw new Error(`Unknown animation: ${name}`);
+  _keyframes.set(name, _keyframesDefs[name]);
 
-  // ── transform parts ──────────────────────────────────────────
-  const parts = [];
-
-  if (p.x       != null) parts.push(`translateX(${px(p.x)})`);
-  if (p.y       != null) parts.push(`translateY(${px(p.y)})`);
-  if (p.z3d     != null) parts.push(`translateZ(${px(p.z3d)})`);
-  if (p.scale   != null) parts.push(`scale(${p.scale})`);
-  if (p.scaleX  != null) parts.push(`scaleX(${p.scaleX})`);
-  if (p.scaleY  != null) parts.push(`scaleY(${p.scaleY})`);
-  if (p.rotate  != null) parts.push(`rotate(${typeof p.rotate === "number" ? p.rotate + "deg" : p.rotate})`);
-  if (p.skewX   != null) parts.push(`skewX(${typeof p.skewX === "number" ? p.skewX + "deg" : p.skewX})`);
-  if (p.skewY   != null) parts.push(`skewY(${typeof p.skewY === "number" ? p.skewY + "deg" : p.skewY})`);
-
-  if (parts.length) {
-    items.push(...rp("transform", parts.join(" "), v => v));
-  }
-
-  // ── transform-origin ─────────────────────────────────────────
-  if (p.origin != null) {
-    items.push(...rp("transform-origin", p.origin, v => ORIGIN_TOKENS[v] ?? v));
-  }
-
-  // ── transition ───────────────────────────────────────────────
-  const hasDuration = p.duration != null;
-  const hasProp     = p.prop     != null;
-  const hasEase     = p.ease     != null;
-  const hasDelay    = p.delay    != null;
-
-  if (hasDuration || hasProp || hasEase || hasDelay) {
-    const prop     = p.prop ?? "all";
-    const dur      = typeof p.duration === "number" ? `${p.duration}ms` : (p.duration ?? "200ms");
-    const easing   = EASE_MAP[p.ease] ?? (p.ease ?? EASE_MAP["out"]);
-    const delay    = typeof p.delay   === "number" ? `${p.delay}ms`    : (p.delay    ?? "0ms");
-    items.push({ mq: null, decl: `transition:${prop} ${dur} ${easing} ${delay}` });
-  }
-
-  // ── will-change (perf hint when transforming) ─────────────────
-  if (p.willChange != null) {
-    items.push({ mq: null, decl: `will-change:${p.willChange}` });
-  }
-
-  // ── visibility helpers ────────────────────────────────────────
-  if (p.visible != null) {
-    items.push({ mq: null, decl: `visibility:${p.visible ? "visible" : "hidden"}` });
-  }
-  if (p.pointer != null) {
-    items.push({ mq: null, decl: `pointer-events:${p.pointer ? "auto" : "none"}` });
-  }
-  if (p.opacity != null) {
-    items.push(...rp("opacity", p.opacity, v => String(v)));
-  }
-  if (p.backface != null) {
-    items.push({ mq: null, decl: `backface-visibility:${p.backface ? "visible" : "hidden"}` });
-  }
-
-  return items;
+  const cls = uid();
+  const parts = [name, duration, easing, delay, count, fill];
+  if (direction) parts.push(direction);
+  addRule(cls, [`animation: ${parts.join(" ")}`]);
+  return cls;
 }
 
-function transform(props) {
-  const { on, ...rest } = props;
-  return PKClass(register(assemble(buildTransformDecls(rest), processPseudos(on, buildTransformDecls))));
+// ─── transform() ──────────────────────────────────────────────────────────────
+
+function transform({
+  scale, scaleX, scaleY,
+  rotate,
+  translateX, translateY,
+  skewX, skewY,
+  origin,
+  transition,
+  duration   = "150ms",
+  easing     = "ease",
+  properties = "all",
+  visible,
+  hidden,
+  opacity,
+  willChange,
+} = {}) {
+  const cls = uid();
+  const d = [];
+  const tx = [];
+
+  if (scale     !== undefined) tx.push(`scale(${scale})`);
+  if (scaleX    !== undefined) tx.push(`scaleX(${scaleX})`);
+  if (scaleY    !== undefined) tx.push(`scaleY(${scaleY})`);
+  if (rotate    !== undefined) tx.push(`rotate(${typeof rotate==="number"?rotate+"deg":rotate})`);
+  if (translateX!== undefined) tx.push(`translateX(${typeof translateX==="number"?translateX+"px":translateX})`);
+  if (translateY!== undefined) tx.push(`translateY(${typeof translateY==="number"?translateY+"px":translateY})`);
+  if (skewX     !== undefined) tx.push(`skewX(${typeof skewX==="number"?skewX+"deg":skewX})`);
+  if (skewY     !== undefined) tx.push(`skewY(${typeof skewY==="number"?skewY+"deg":skewY})`);
+  if (tx.length)               d.push(`transform: ${tx.join(" ")}`);
+  if (origin    !== undefined) d.push(`transform-origin: ${origin}`);
+
+  if (transition !== undefined) {
+    d.push(`transition: ${transition}`);
+  } else if (properties !== undefined) {
+    d.push(`transition: ${properties} ${duration} ${easing}`);
+  }
+
+  if (visible === true)  d.push(`visibility: visible`);
+  if (hidden  === true)  d.push(`visibility: hidden`);
+  if (opacity !== undefined) d.push(`opacity: ${opacity}`);
+  if (willChange !== undefined) d.push(`will-change: ${willChange}`);
+
+  addRule(cls, d);
+  return cls;
 }
 
-// ─────────────────────────────────────────────────────────────────
-// CX  — compose class names
-// ─────────────────────────────────────────────────────────────────
+// ─── hover() ──────────────────────────────────────────────────────────────────
+
+function hover(opts = {}) {
+  const cls = uid();
+  const d = [];
+  const px = (v) => typeof v === "number" ? v + "px" : v;
+
+  if (opts.fill  !== undefined) d.push(`background-color: ${resolveColor(opts.fill)}`);
+  if (opts.color !== undefined) d.push(`background-color: ${resolveColor(opts.color)}`);
+  if (opts.ink   !== undefined) d.push(`color: ${resolveColor(opts.ink)}`);
+  if (opts.opacity  !== undefined) d.push(`opacity: ${opts.opacity}`);
+  if (opts.scale    !== undefined) d.push(`transform: scale(${opts.scale})`);
+  if (opts.raise    !== undefined) d.push(`box-shadow: ${_shadows[opts.raise] ?? opts.raise}`);
+  if (opts.shadow   !== undefined) d.push(`box-shadow: ${_shadows[opts.shadow] ?? opts.shadow}`);
+  if (opts.round    !== undefined) d.push(`border-radius: ${_rounds[opts.round] ?? px(opts.round)}`);
+  if (opts.border   !== undefined) d.push(`border: ${opts.border}`);
+  if (opts.underline)              d.push(`text-decoration: underline`);
+  if (opts.cursor   !== undefined) d.push(`cursor: ${opts.cursor}`);
+  if (opts.translate !== undefined) d.push(`transform: translateY(${px(opts.translate)})`);
+
+  addRule(cls, d, ":hover");
+  return cls;
+}
+
+// ─── cx() ─────────────────────────────────────────────────────────────────────
 
 function cx(...args) {
-  const out = [];
-  for (const arg of args) {
-    if (!arg) continue;
-    if (typeof arg === "string" || arg instanceof PKClass) { out.push(String(arg)); continue; }
-    if (typeof arg === "object" && !Array.isArray(arg)) {
-      for (const [cls, cond] of Object.entries(arg)) {
-        if (cond) out.push(String(cls));
-      }
-    }
-  }
-  return PKClass(out.filter(Boolean).join(" "));
+  return args
+    .flat()
+    .filter(Boolean)
+    .join(" ");
 }
 
-// ─────────────────────────────────────────────────────────────────
-// THEME
-// ─────────────────────────────────────────────────────────────────
+// ─── Breakpoints ──────────────────────────────────────────────────────────────
 
-function theme({ colors = {}, fonts = {} } = {}, selector = ":root") {
-  const decls = [];
-  for (const [k, v] of Object.entries(colors)) decls.push(`--pk-${k}:${v}`);
-  for (const [k, v] of Object.entries(fonts))  decls.push(`--pk-font-${k}:${v}`);
-  if (decls.length) injectRaw(`${selector}{${decls.join(";")}}`);
+const _breakpoints = { sm: 640, md: 768, lg: 1024, xl: 1280 };
+
+function responsive(bp, cls) {
+  const minWidth = _breakpoints[bp];
+  if (!minWidth) throw new Error(`Unknown breakpoint: ${bp}. Available: ${Object.keys(_breakpoints).join(", ")}`);
+  const existing = _rules.get(cls);
+  if (!existing) return cls;
+  _rules.set(cls, `@media (min-width: ${minWidth}px) { ${existing} }`);
+  return cls;
 }
 
-// ─────────────────────────────────────────────────────────────────
-// GLOBAL
-// ─────────────────────────────────────────────────────────────────
+const sm = (cls) => responsive("sm", cls);
+const md = (cls) => responsive("md", cls);
+const lg = (cls) => responsive("lg", cls);
+const xl = (cls) => responsive("xl", cls);
 
-function global(selector, props) {
-  const items = [
-    ...buildBoxDecls(props),
-    ...buildTextDecls(props),
-    ...buildSpaceDecls(props),
-    ...buildSizeDecls(props),
-  ];
-  const css = items.filter(i => i.mq === null).map(i => i.decl).join(";");
-  if (css) injectRaw(`${selector}{${css}}`);
+// ─── getCss() ─────────────────────────────────────────────────────────────────
+
+function getCss() {
+  const kf = [..._keyframes.values()].join("\n");
+  const rules = [..._rules.values()].join("\n");
+  return kf ? `${kf}\n${rules}` : rules;
 }
 
-// ─────────────────────────────────────────────────────────────────
-// EXPORTS
-// ─────────────────────────────────────────────────────────────────
+function resetCss() {
+  _rules.clear();
+  _keyframes.clear();
+  _counter = 0;
+}
+
+// ─── Exports ──────────────────────────────────────────────────────────────────
 
 module.exports = {
-  box, text, layout, space, size, place, decor, transform, animate,
+  theme,
+  box,
+  text,
+  layout,
+  size,
+  place,
+  decor,
+  animate,
+  transform,
+  hover,
   cx,
-  theme, global,
-  flush, reset,
+  responsive,
+  sm, md, lg, xl,
+  getCss,
+  resetCss,
 };
